@@ -17,7 +17,7 @@ from io import TextIOBase, StringIO
 from collections import deque
 
 from sqlparse import tokens
-from sqlparse.keywords import SQL_REGEX
+from sqlparse.keywords import SQL_REGEX, DATA_REGEX
 from sqlparse.utils import consume
 from sqlparse.engine.statement_splitter import StatementSplitter
 
@@ -26,9 +26,31 @@ class Lexer:
     """Lexer
     Empty class. Leaving for backwards-compatibility
     """
+    def __init__(self, context=None):
+        if context is None:
+            context = {}
+        self.context = context
+        self._context_regexes = SQL_REGEX
+        self.update_context()
 
-    @staticmethod
-    def get_tokens(text, encoding=None):
+    def update_context(self):
+        self._mode = self.context.get('mode')
+        if self._mode == 'data':
+            self._context_regexes = DATA_REGEX
+        else:
+            self._context_regexes = SQL_REGEX
+
+    def _handle_action(self, action, m):
+        if isinstance(action, tokens._TokenType):
+            ttype = action
+            value = m.group()
+            end = m.end()
+        elif callable(action):
+            ttype, value, end = action(m)
+
+        return ttype, value, end
+
+    def get_tokens(self, text, encoding=None):
         """
         Return an iterable of (tokentype, value) pairs generated from
         `text`. If `unfiltered` is set to `True`, the filtering mechanism
@@ -44,20 +66,31 @@ class Lexer:
         text = encode(text, encoding)
         iterable = enumerate(text)
         for pos, char in iterable:
-            for rexmatch, action in SQL_REGEX:
+            self.update_context()
+            for rexmatch, actions in self._context_regexes:
                 m = rexmatch(text, pos)
 
                 if not m:
                     continue
-                elif isinstance(action, tokens._TokenType):
-                    yield action, m.group()
-                elif callable(action):
-                    yield action(m.group())
 
-                consume(iterable, m.end() - pos - 1)
+                if isinstance(actions, list):
+                    for action in actions:
+                        ttype, value, end = self._handle_action(action, m)
+                        yield ttype, value
+                else:
+                    ttype, value, end = self._handle_action(actions, m)
+                    yield ttype, value
+
+                consume(iterable, end - pos - 1)
+
                 break
             else:
                 yield tokens.Error, char
+            if self._mode:
+                self._mode = None
+                if 'mode' in self.context:
+                    del self.context['mode']
+
 
 
 def encode(text, encoding=None):
@@ -91,11 +124,10 @@ class StreamLexer:
     separated statements because filelike object is read line by line.
     """
 
-    def __init__(self, statement_buffer_size=3, encoding=None,
-                 get_tokens=Lexer.get_tokens):
+    def __init__(self, lexer, statement_buffer_size=3, encoding=None):
         self.statement_buffer_size = statement_buffer_size
         self.encoding = encoding
-        self.get_tokens = get_tokens
+        self.lexer = lexer
         self.buferred_text = ""
         self.buferred_statements = deque()
         self.statement_splitter = StatementSplitter()
@@ -115,12 +147,12 @@ class StreamLexer:
             for _, next_text in list(self.buferred_statements):
                 text = text + next_text
                 total_statement = next(StatementSplitter().process(
-                    self.get_tokens(text, self.encoding)))
+                    self.lexer.get_tokens(text, self.encoding)))
                 if total_statement.tokens != statement.tokens:
                     statement_text = text
                     self.buferred_statements.popleft()
 
-            yield from self.get_tokens(statement_text, self.encoding)
+            yield from self.lexer.get_tokens(statement_text, self.encoding)
 
     def _handle_statement_and_get_tokens(self, statement, flush=False):
         """
@@ -152,7 +184,7 @@ class StreamLexer:
             self.buferred_text = self.buferred_text + line
 
             for statement in self.statement_splitter.process(
-                self.get_tokens(line, self.encoding)
+                self.lexer.get_tokens(line, self.encoding)
             ):
                 if statement.pending:
                     pending_statement = statement
@@ -161,17 +193,19 @@ class StreamLexer:
                     yield from self._handle_statement_and_get_tokens(statement)
 
 
-def tokenize(sql, encoding=None, stream=None):
+def tokenize(sql, encoding=None, stream=None, context=None):
     """Tokenize sql.
 
     Tokenize *sql* using the :class:`Lexer` and return a 2-tuple stream
     of ``(token type, value)`` items.
     """
+    stream = False
+    lexer = Lexer(context)
     if isinstance(sql, TextIOBase):
         if stream is not False:
-            return StreamLexer().stream_tokens(sql)
+            return StreamLexer(lexer).stream_tokens(sql)
         sql = sql.read()
     if stream:
         sql = StringIO(encode(sql, encoding))
-        return StreamLexer().stream_tokens(sql)
-    return Lexer.get_tokens(sql, encoding)
+        return StreamLexer(lexer).stream_tokens(sql)
+    return lexer.get_tokens(sql, encoding)

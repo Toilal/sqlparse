@@ -23,7 +23,9 @@ class FilterStack:
         self._grouping = True
 
     def run(self, sql, encoding=None, stream=False):
-        stream = lexer.tokenize(sql, encoding, stream)
+        context = {}
+
+        stream = lexer.tokenize(sql, encoding, stream, context)
         # Process token stream
         for filter_ in self.preprocess:
             stream = filter_.process(stream)
@@ -32,6 +34,20 @@ class FilterStack:
 
         # Output: Stream processed Statements
         for stmt in stream:
+            if 'mode' in context:
+                del context['mode']
+
+            first_token = stmt.token_first(True, True)
+            if first_token and first_token.normalized == 'COPY':
+                from_token = stmt.token_matching(
+                    lambda t: t.normalized == 'FROM', 0)
+                if from_token:
+                    stdin_token = stmt.token_matching(
+                        lambda t: t.is_keyword and t.normalized == 'STDIN',
+                        from_token.parent.token_index(from_token))
+                    if stdin_token:
+                        context['mode'] = 'data'
+
             if self._grouping:
                 stmt = grouping.group(stmt)
 

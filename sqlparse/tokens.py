@@ -38,6 +38,7 @@ Newline = Whitespace.Newline
 Error = Token.Error
 # Text that doesn't belong to this lexer (e.g. HTML in PHP)
 Other = Token.Other
+Data = Token.Data
 
 # Common token types for source code
 Keyword = Token.Keyword

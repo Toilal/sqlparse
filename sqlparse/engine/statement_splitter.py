@@ -99,7 +99,9 @@ class StatementSplitter:
             self.tokens.append(sql.Token(ttype, value))
 
             # Check if we get the end of a statement
-            if self.level <= 0 and ttype is T.Punctuation and value == ';':
+            if self.level <= 0 and \
+                (ttype is T.Punctuation and value == ';' or
+                 ttype is T.Punctuation and value == r'\.'):
                 self.consume_ws = True
 
         # Yield pending statement (if any)
